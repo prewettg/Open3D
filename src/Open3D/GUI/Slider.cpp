@@ -30,6 +30,7 @@
 
 #include <imgui.h>
 
+#include <algorithm>
 #include <cmath>
 #include <sstream>
 
@@ -51,24 +52,18 @@ struct Slider::Impl {
     double maxValue = 1e35;
 };
 
-Slider::Slider(Type type)
-: impl_(new Slider::Impl()) {
+Slider::Slider(Type type) : impl_(new Slider::Impl()) {
     std::stringstream s;
     s << "##slider_" << gNextSliderId++;
     impl_->id = s.str();
     impl_->type = type;
 }
 
-Slider::~Slider() {
-}
+Slider::~Slider() {}
 
-int Slider::GetIntValue() const {
-    return int(impl_->value);
-}
+int Slider::GetIntValue() const { return int(impl_->value); }
 
-double Slider::GetDoubleValue() const {
-    return impl_->value;
-}
+double Slider::GetDoubleValue() const { return impl_->value; }
 
 void Slider::SetValue(double val) {
     impl_->value = std::max(impl_->minValue, std::min(impl_->maxValue, val));
@@ -77,13 +72,9 @@ void Slider::SetValue(double val) {
     }
 }
 
-double Slider::GetMinimumValue() const {
-    return impl_->minValue;
-}
+double Slider::GetMinimumValue() const { return impl_->minValue; }
 
-double Slider::GetMaximumValue() const {
-    return impl_->maxValue;
-}
+double Slider::GetMaximumValue() const { return impl_->maxValue; }
 
 void Slider::SetLimits(double minValue, double maxValue) {
     impl_->minValue = minValue;
@@ -103,20 +94,20 @@ Size Slider::CalcPreferredSize(const Theme& theme) const {
 }
 
 Widget::DrawResult Slider::Draw(const DrawContext& context) {
-    auto &frame = GetFrame();
-    ImGui::SetCursorPos(ImVec2(frame.x - context.uiOffsetX,
-                               frame.y - context.uiOffsetY));
+    auto& frame = GetFrame();
+    ImGui::SetCursorPos(
+            ImVec2(frame.x - context.uiOffsetX, frame.y - context.uiOffsetY));
 
     float newValue = impl_->value;
     ImGui::PushItemWidth(GetFrame().width);
     if (impl_->type == INT) {
         int iNewValue = newValue;
-        ImGui::SliderInt(impl_->id.c_str(), &iNewValue,
-                         impl_->minValue, impl_->maxValue);
+        ImGui::SliderInt(impl_->id.c_str(), &iNewValue, impl_->minValue,
+                         impl_->maxValue);
         newValue = double(iNewValue);
     } else {
-        ImGui::SliderFloat(impl_->id.c_str(), &newValue,
-                           impl_->minValue, impl_->maxValue);
+        ImGui::SliderFloat(impl_->id.c_str(), &newValue, impl_->minValue,
+                           impl_->maxValue);
     }
     ImGui::PopItemWidth();
 
@@ -130,5 +121,5 @@ Widget::DrawResult Slider::Draw(const DrawContext& context) {
     return Widget::DrawResult::NONE;
 }
 
-} // gui
-} // open3d
+}  // namespace gui
+}  // namespace open3d

@@ -27,6 +27,7 @@
 #include "Window.h"
 
 #include "Application.h"
+#include "ImguiFilamentBridge.h"
 #include "Menu.h"
 #include "Native.h"
 #include "Renderer.h"
@@ -34,11 +35,19 @@
 #include "Util.h"
 #include "Widget.h"
 
-#include <imgui.h>
+#include "Open3D/Visualization/Rendering/Filament/FilamentEngine.h"
+#include "Open3D/Visualization/Rendering/Filament/FilamentRenderer.h"
+
 #include <SDL.h>
+#include <filament/Engine.h>
+#include <imgui.h>
 
 #include <cmath>
 #include <vector>
+
+#ifdef WIN32
+#include <SDL_syswm.h>
+#endif
 
 using namespace open3d::gui::util;
 
@@ -50,21 +59,21 @@ namespace {
 
 // Assumes the correct ImGuiContext is current
 void updateImGuiForScaling(float newScaling) {
-    ImGuiStyle &style = ImGui::GetStyle();
+    ImGuiStyle& style = ImGui::GetStyle();
     // FrameBorderSize is not adjusted (we want minimal borders)
     style.FrameRounding *= newScaling;
 }
 
-} // (anonymous)
+}  // namespace
 
-struct Window::Impl
-{
-    SDL_Window *window = nullptr;
+struct Window::Impl {
+    SDL_Window* window = nullptr;
     Theme theme;  // so that the font size can be different based on scaling
-    Renderer *renderer;
+    visualization::FilamentRenderer* renderer;
     struct {
-        ImGuiContext *context;
-        ImFont *systemFont;  // is a reference; owned by imguiContext
+        std::unique_ptr<ImguiFilamentBridge> imguiBridge = nullptr;
+        ImGuiContext* context;
+        ImFont* systemFont;  // is a reference; owned by imguiContext
         float scaling = 1.0;
     } imgui;
     std::shared_ptr<Menu> menubar;
@@ -74,7 +83,7 @@ struct Window::Impl
 };
 
 Window::Window(const std::string& title, int width, int height)
-: impl_(new Window::Impl()) {
+    : impl_(new Window::Impl()) {
     const int x = SDL_WINDOWPOS_CENTERED;
     const int y = SDL_WINDOWPOS_CENTERED;
     uint32_t flags = SDL_WINDOW_SHOWN |  // so SDL's context gets created
@@ -93,13 +102,21 @@ Window::Window(const std::string& title, int width, int height)
     impl_->theme.defaultMargin *= scaling;
     impl_->theme.defaultLayoutSpacing *= scaling;
 
-    impl_->renderer = new Renderer(*this, impl_->theme);
+    auto& engineInstance = visualization::EngineInstance::GetInstance();
+    auto& resourceManager = visualization::EngineInstance::GetResourceManager();
 
-    auto &theme = impl_->theme;  // shorter alias
+    impl_->renderer = new visualization::FilamentRenderer(
+            engineInstance, GetNativeDrawable(), resourceManager);
+
+    auto& theme = impl_->theme;  // shorter alias
     impl_->imgui.context = ImGui::CreateContext();
     ImGui::SetCurrentContext(impl_->imgui.context);
+
+    impl_->imgui.imguiBridge =
+            std::make_unique<ImguiFilamentBridge>(impl_->renderer, GetSize());
+
     ImGui::StyleColorsDark();
-    ImGuiStyle &style = ImGui::GetStyle();
+    ImGuiStyle& style = ImGui::GetStyle();
     style.WindowPadding = ImVec2(0, 0);
     style.WindowRounding = 0;
     style.WindowBorderSize = 0;
@@ -112,22 +129,29 @@ Window::Window(const std::string& title, int width, int height)
     style.Colors[ImGuiCol_ButtonHovered] = colorToImgui(theme.buttonHoverColor);
     style.Colors[ImGuiCol_ButtonActive] = colorToImgui(theme.buttonActiveColor);
     style.Colors[ImGuiCol_CheckMark] = colorToImgui(theme.checkboxCheckColor);
-    style.Colors[ImGuiCol_FrameBg] = colorToImgui(theme.comboboxBackgroundColor);
-    style.Colors[ImGuiCol_FrameBgHovered] = colorToImgui(theme.comboboxHoverColor);
-    style.Colors[ImGuiCol_FrameBgActive] = style.Colors[ImGuiCol_FrameBgHovered];
+    style.Colors[ImGuiCol_FrameBg] =
+            colorToImgui(theme.comboboxBackgroundColor);
+    style.Colors[ImGuiCol_FrameBgHovered] =
+            colorToImgui(theme.comboboxHoverColor);
+    style.Colors[ImGuiCol_FrameBgActive] =
+            style.Colors[ImGuiCol_FrameBgHovered];
     style.Colors[ImGuiCol_Tab] = colorToImgui(theme.tabInactiveColor);
     style.Colors[ImGuiCol_TabHovered] = colorToImgui(theme.tabHoverColor);
     style.Colors[ImGuiCol_TabActive] = colorToImgui(theme.tabActiveColor);
 
-    // If the given font path is invalid, ImGui will silently fall back to proggy, which is a
-    // tiny "pixel art" texture that is compiled into the library.
+    // If the given font path is invalid, ImGui will silently fall back to
+    // proggy, which is a tiny "pixel art" texture that is compiled into the
+    // library.
     if (!theme.fontPath.empty()) {
-        ImGuiIO &io = ImGui::GetIO();
-        impl_->imgui.systemFont = io.Fonts->AddFontFromFileTTF(theme.fontPath.c_str(), theme.fontSize);
+        ImGuiIO& io = ImGui::GetIO();
+        impl_->imgui.systemFont = io.Fonts->AddFontFromFileTTF(
+                theme.fontPath.c_str(), theme.fontSize);
         /*static*/ unsigned char* pixels;
-        int width, height, bytesPerPx;
-        io.Fonts->GetTexDataAsAlpha8(&pixels, &width, &height, &bytesPerPx);
-        impl_->renderer->AddFontTextureAtlasAlpha8(pixels, width, height, bytesPerPx);
+        int textureW, textureH, bytesPerPx;
+        io.Fonts->GetTexDataAsAlpha8(&pixels, &textureW, &textureH,
+                                     &bytesPerPx);
+        impl_->imgui.imguiBridge->createAtlasTextureAlpha8(
+                pixels, textureW, textureH, bytesPerPx);
     }
 
     ImGuiIO& io = ImGui::GetIO();
@@ -135,7 +159,7 @@ Window::Window(const std::string& title, int width, int height)
 #ifdef WIN32
     SDL_SysWMinfo wmInfo;
     SDL_VERSION(&wmInfo.version);
-    SDL_GetWindowWMInfo(window->getSDLWindow(), &wmInfo);
+    SDL_GetWindowWMInfo(impl_->window, &wmInfo);
     io.ImeWindowHandle = wmInfo.info.win.window;
 #endif
     // ImGUI's io.KeysDown is indexed by our scan codes, and we fill out
@@ -182,21 +206,17 @@ void* Window::GetNativeDrawable() const {
     return open3d::gui::GetNativeDrawable(impl_->window);
 }
 
-uint32_t Window::GetID() const {
-    return SDL_GetWindowID(impl_->window);
-}
+uint32_t Window::GetID() const { return SDL_GetWindowID(impl_->window); }
 
-const Theme& Window::GetTheme() const {
-    return impl_->theme;
-}
+const Theme& Window::GetTheme() const { return impl_->theme; }
 
-Renderer& Window::GetRenderer() {
+visualization::AbstractRenderInterface& Window::GetRenderer() const {
     return *impl_->renderer;
 }
 
 Size Window::GetSize() const {
     uint32_t w, h;
-    SDL_GL_GetDrawableSize(impl_->window, (int*) &w, (int*) &h);
+    SDL_GL_GetDrawableSize(impl_->window, (int*)&w, (int*)&h);
     return Size(w, h);
 }
 
@@ -231,13 +251,9 @@ void Window::Show(bool vis /*= true*/) {
     }
 }
 
-void Window::Close() {
-    Application::GetInstance().RemoveWindow(this);
-}
+void Window::Close() { Application::GetInstance().RemoveWindow(this); }
 
-std::shared_ptr<Menu> Window::GetMenubar() const {
-    return impl_->menubar;
-}
+std::shared_ptr<Menu> Window::GetMenubar() const { return impl_->menubar; }
 
 void Window::SetMenubar(std::shared_ptr<Menu> menu) {
     impl_->menubar = menu;
@@ -254,7 +270,7 @@ void Window::Layout(const Theme& theme) {
         auto r = GetContentRect();
         impl_->children[0]->SetFrame(r);
     } else {
-        for (auto &child : impl_->children) {
+        for (auto& child : impl_->children) {
             child->Layout(theme);
         }
     }
@@ -264,12 +280,13 @@ Window::DrawResult Window::OnDraw(float dtSec) {
     // These are here to provide fast unique window names. If you find yourself
     // needing more than a handful, you should probably be using a container
     // of some sort (see Layout.h).
-    static const char* winNames[] = { "win1", "win2", "win3", "win4", "win5",
-                                      "win6", "win7", "win8", "win9", "win10",
-                                      "win11", "win12", "win13", "win14", "win15",
-                                      "win16", "win17", "win18", "win19", "win20" };
+    static const char* winNames[] = {
+            "win1",  "win2",  "win3",  "win4",  "win5",  "win6",  "win7",
+            "win8",  "win9",  "win10", "win11", "win12", "win13", "win14",
+            "win15", "win16", "win17", "win18", "win19", "win20"};
 
-    impl_->renderer->BeginFrame();  // this can return false if Filament wants to skip a frame
+    impl_->renderer->BeginFrame();  // this can return false if Filament wants
+                                    // to skip a frame
 
     // Set current context
     ImGui::SetCurrentContext(impl_->imgui.context);
@@ -303,53 +320,41 @@ Window::DrawResult Window::OnDraw(float dtSec) {
 
     // Layout if necessary.  This must happen within ImGui setup so that widgets
     // can query font information.
-    auto &theme = this->impl_->theme;
+    auto& theme = this->impl_->theme;
     if (this->impl_->needsLayout) {
         this->Layout(theme);
         // Clear needsLayout below
     }
 
+    auto size = GetSize();
     int em = theme.fontSize;  // em = font size in digital type (from Wikipedia)
-    DrawContext dc{ theme, 0, 0, em };
+    DrawContext dc{theme, 0, 0, size.width, size.height, em};
 
-    // Draw the 3D widgets first (in case the UI wants to be transparent
-    // on top). These will actually get drawn now. Since these are not
-    // ImGui objects, nothing will happen as far as ImGui is concerned,
-    // but Filament will issue the appropriate rendering commands.
     bool needsRedraw = false;
-    for (auto &child : this->impl_->children) {
-        if (child->Is3D()) {
-            if (child->Draw(dc) != Widget::DrawResult::NONE) {
-                needsRedraw = true;
-            }
-        }
-    }
 
     // Now draw all the 2D widgets. These will get recorded by ImGui.
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar |
                              ImGuiWindowFlags_NoResize |
                              ImGuiWindowFlags_NoCollapse;
     int winIdx = 0;
-    for (auto &child : this->impl_->children) {
-        if (!child->Is3D()) {
-            auto frame = child->GetFrame();
-            auto isContainer = !child->GetChildren().empty();
-            if (isContainer) {
-                dc.uiOffsetX = frame.x;
-                dc.uiOffsetY = frame.y;
-                ImGui::SetNextWindowPos(ImVec2(frame.x, frame.y));
-                ImGui::SetNextWindowSize(ImVec2(frame.width, frame.height));
-                ImGui::Begin(winNames[winIdx++], nullptr, flags);
-            } else {
-                dc.uiOffsetX = 0;
-                dc.uiOffsetY = 0;
-            }
-            if (child->Draw(dc) != Widget::DrawResult::NONE) {
-                needsRedraw = true;
-            }
-            if (isContainer) {
-                ImGui::End();
-            }
+    for (auto& child : this->impl_->children) {
+        auto frame = child->GetFrame();
+        auto isContainer = !child->GetChildren().empty();
+        if (isContainer) {
+            dc.uiOffsetX = frame.x;
+            dc.uiOffsetY = frame.y;
+            ImGui::SetNextWindowPos(ImVec2(frame.x, frame.y));
+            ImGui::SetNextWindowSize(ImVec2(frame.width, frame.height));
+            ImGui::Begin(winNames[winIdx++], nullptr, flags);
+        } else {
+            dc.uiOffsetX = 0;
+            dc.uiOffsetY = 0;
+        }
+        if (child->Draw(dc) != Widget::DrawResult::NONE) {
+            needsRedraw = true;
+        }
+        if (isContainer) {
+            ImGui::End();
         }
     }
 
@@ -368,12 +373,20 @@ Window::DrawResult Window::OnDraw(float dtSec) {
     // Finish frame and generate the commands
     ImGui::PopFont();
     ImGui::EndFrame();
-    ImGui::Render(); // creates the draw data (i.e. Render()s to data)
+    ImGui::Render();  // creates the draw data (i.e. Render()s to data)
 
     // Draw the ImGui commands
-    impl_->renderer->RenderImgui(ImGui::GetDrawData());
+    impl_->imgui.imguiBridge->update(ImGui::GetDrawData());
+
+    impl_->renderer->Draw();
 
     impl_->renderer->EndFrame();
+
+    return (needsRedraw ? REDRAW : NONE);
+}
+
+Window::DrawResult Window::DrawOnce(float dtSec) {
+    auto needsRedraw = OnDraw(dtSec);
 
     // ImGUI can take two frames to do its layout, so if we did a layout
     // redraw a second time. This helps prevent a brief red flash when the
@@ -384,12 +397,13 @@ Window::DrawResult Window::OnDraw(float dtSec) {
         OnDraw(0.001);
     }
 
-    return (needsRedraw ? REDRAW : NONE);
+    return needsRedraw;
 }
 
 void Window::OnResize() {
     impl_->needsLayout = true;
-    impl_->renderer->UpdateFromDrawable();
+
+    impl_->imgui.imguiBridge->onWindowResized(*this);
 
     auto size = GetSize();
     auto scaling = GetScaling();
@@ -418,7 +432,7 @@ void Window::OnMouseWheel(const MouseWheelEvent& e) {
     ImGui::SetCurrentContext(impl_->imgui.context);
     ImGuiIO& io = ImGui::GetIO();
     io.MouseWheelH += (e.x > 0 ? 1 : -1);
-    io.MouseWheel  += (e.y > 0 ? 1 : -1);
+    io.MouseWheel += (e.y > 0 ? 1 : -1);
 }
 
 void Window::OnKey(const KeyEvent& e) {
@@ -434,5 +448,5 @@ void Window::OnTextInput(const TextInputEvent& e) {
     io.AddInputCharactersUTF8(e.utf8);
 }
 
-} // gui
-} // opend3d
+}  // namespace gui
+}  // namespace open3d

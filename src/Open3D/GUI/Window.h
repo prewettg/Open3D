@@ -30,9 +30,11 @@
 #include <memory>
 #include <string>
 
-#include "Gui.h"
 #include "Events.h"
+#include "Gui.h"
 #include "Menu.h"
+
+#include "Open3D/Visualization/Rendering/AbstractRenderInterface.h"
 
 namespace open3d {
 namespace gui {
@@ -45,6 +47,7 @@ class Widget;
 class Window {
     friend class Application;
     friend class Renderer;
+
 public:
     Window(const std::string& title, int width, int height);
     virtual ~Window();
@@ -52,10 +55,10 @@ public:
     uint32_t GetID() const;
 
     const Theme& GetTheme() const;
-    Renderer& GetRenderer();
+    visualization::AbstractRenderInterface& GetRenderer() const;
 
-    Size GetSize() const; // total interior size of window, including menubar
-    Rect GetContentRect() const; // size available to widgets
+    Size GetSize() const;  // total interior size of window, including menubar
+    Rect GetContentRect() const;  // size available to widgets
     float GetScaling() const;
 
     bool IsVisible() const;
@@ -75,6 +78,7 @@ protected:
 private:
     enum DrawResult { NONE, REDRAW };
     DrawResult OnDraw(float dtSec);
+    DrawResult DrawOnce(float dtSec);
     void OnResize();
     void OnMouseMove(const MouseMoveEvent& e);
     void OnMouseButton(const MouseButtonEvent& e);
@@ -88,5 +92,5 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-}
-}
+}  // namespace gui
+}  // namespace open3d
